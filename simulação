@@ -1,0 +1,344 @@
+rm(list = ls())
+
+library(dplyr)
+library(magrittr)
+library(orthopolynom)
+library(dlm)
+library(foreach)
+library(doParallel)
+library(doRNG)
+library(coda)
+
+#no_cores<-detectCores()
+#cl<-makeCluster(no_cores)
+#registerDoParallel(cl)
+setwd("C:/Users/Servidor Guilherme/Desktop/PEsquisa")
+
+phi=0.99
+
+
+dglmpoissonmppm<-function(yt, a0, R0, delta, U)
+{
+ 
+  n=length(yt)
+  F=1
+  Gt=1
+ 
+  ####################################################
+  m=c(rep(0, n))
+  C=c(rep(0, n))
+  R=c(rep(0, n))
+  f=c(rep(0, n))
+  q=c(rep(0, n))
+  a=c(rep(0, n))
+  ######################################################
+  alpha=c(rep(0, n))
+  beta=c(rep(0, n))
+  yprev=c(rep(0, n))
+ 
+ 
+ 
+  ff=c(rep(0, length(yt)))
+  qq=c(rep(0, length(yt)))
+  pyt=NULL
+  a0<-a0
+  R0<-R0
+ 
+  for (i in 1:n)
+  {
+    a[i]=phi*a0
+    R[i]=(phi^2)*R0
+    f[i]=F*a[i]
+    q[i]=t(F)%*%R[i]%*%F
+   
+    alpha[i]=1/q[i]
+    beta[i]=(1/q[i])*exp(-f[i])
+    yprev[i]=alpha[i]/beta[i]
+   
+   
+   
+    pyt[i] <- dnbinom(yt[i], size=alpha[i], prob=beta[i]/(1+beta[i]), log=TRUE)
+    #pyt[i]=(pochhammer(alpha[i],yt[i])/factorial(yt[i]))*(beta[i]^alpha[i])/((1+beta[i])^(alpha[i]+yt[i]))
+    ff[i]=log(yt[i]+alpha[i])-log(beta[i]+1)
+    qq[i]=1/(yt[i]+alpha[i])
+   
+   
+   
+    m[i]=a[i]+(1/q[i])*R[i]*(ff[i]-f[i])
+   
+    C[i]=R[i]-(1/q[i])*((R[i]^2)*(1-qq[i]/q[i]))
+   
+    if((i+1)>n){break}
+   
+    if(U[i]==1){
+      a0<-m[i]
+      R0<-C[i]
+    }
+    else{
+     
+      a0<-Gt%*%m[i]
+     
+      R0=Gt %*% C[i] %*% t(Gt)/delta
+      #R0=Gt %*% C[i] %*% t(Gt)+sigeta1
+     
+    }
+  }
+  llf<-sum(pyt)
+  return(llf)
+}
+
+ppmpoissonarms<-function(yt, a0, R0,  U, s ,t, namost, disc0)
+{
+ 
+  n=length(yt)
+  F=1
+  Gt=1
+ 
+  ####################################################
+  m=c(rep(0, n))
+  C=c(rep(0, n))
+  R=c(rep(0, n))
+  f=c(rep(0, n))
+  q=c(rep(0, n))
+  a=c(rep(0, n))
+  ######################################################
+  alpha=c(rep(0, n))
+  beta=c(rep(0, n))
+  yprev=c(rep(0, n))
+ 
+ 
+ 
+  ff=c(rep(0, length(yt)))
+  qq=c(rep(0, length(yt)))
+  pyt=NULL
+  #a0<-a0
+  #R0<-R0
+ 
+  post<-function(theta)
+  {
+    delta<-theta[1]
+    for (i in 1:n)
+    {
+      a[i]=phi*a0
+      R[i]=(phi^2)*R0
+      f[i]=F*a[i]
+      q[i]=t(F)%*%R[i]%*%F
+     
+      alpha[i]=1/q[i]
+      beta[i]=(1/q[i])*exp(-f[i])
+      yprev[i]=alpha[i]/beta[i]
+     
+     
+     
+      pyt[i] <- dnbinom(yt[i], size=alpha[i], prob=beta[i]/(1+beta[i]), log=TRUE)
+      # pyt[i] <- dnbinom(yt[i], size=alpha[i], prob=beta[i]/(1+beta[i]), log=FALSE)
+      #pyt[i]=(pochhammer(alpha[i],yt[i])/factorial(yt[i]))*(beta[i]^alpha[i])/((1+beta[i])^(alpha[i]+yt[i]))
+      ff[i]=log(yt[i]+alpha[i])-log(beta[i]+1)
+      qq[i]=1/(yt[i]+alpha[i])
+     
+     
+     
+      m[i]=a[i]+(1/q[i])*R[i]*(ff[i]-f[i])
+     
+      C[i]=R[i]-(1/q[i])*((R[i]^2)*(1-qq[i]/q[i]))
+     
+      if((i+1)>n){break}
+     
+      if(U[i]==1){
+        a0<-m[i]
+        R0<-C[i]
+      }
+      else{
+       
+        a0<-Gt%*%m[i]
+       
+        R0=Gt %*% C[i] %*% t(Gt)/delta
+        #R0=Gt %*% C[i] %*% t(Gt)+sigeta1
+       
+      }
+    }
+    post=sum(pyt)+(s-1)*log(delta)+(t-1)*log(1-delta)
+    #post=prod(pyt)*(delta^(s-1))*(1-delta)^(t-1)
+    return(post)
+  }
+ 
+  deltasample<-arms(disc0, post, function(delta) (delta>0)*(delta<1), namost)
+  #delta<-mean(deltasample)
+  return(deltasample)
+}
+
+contbl<-function(U){
+  nblocos<-1+length(U)-sum(U)
+  return(nblocos)
+}
+
+seed = 999
+L=500
+UMC=list()
+ytlist=list()
+nivel=list()
+lambda=list()
+deltappmmean=NULL
+deltappmmedian=NULL
+deltadglm=NULL
+deltappmlow=NULL
+deltappmhigh=NULL
+deltadglmlow=NULL
+deltadglmhigh=NULL
+probchange<-matrix(nrow=L, ncol=100-1)
+s=1
+t=1
+
+for (l in 1:L){
+  set.seed(seed+l)
+  tryCatch({
+    n=200
+    wt=rnorm(n,0,1)
+    wt
+    sigeta=0.01 # Vari?ncia de interesse sig.n^2
+    eta=sqrt(sigeta)*wt # N(0,sig.n^2)
+    mut=NULL
+    lambt=NULL
+    yt=NULL
+    mut[1]=1
+    lambt[1]=exp(mut[1])
+    yt[1]=rpois(1,lambt[1])
+   
+    for(i in 2:length(eta)){
+      if(i<100){
+        mut[i]=phi*mut[i-1]+eta[i]
+        lambt[i]=exp(mut[i])
+        yt[i]=rpois(1,lambt[i])
+      }
+     
+      if(i>=100 & i<125){
+        if(i==100){
+          mut[100]=log(exp(mut[99])+15)
+         
+          lambt[i]=exp(mut[i])
+          yt[i]=rpois(1,lambt[i])
+        }
+        else{
+          mut[i]=phi*mut[i-1]+eta[i]
+          lambt[i]=exp(mut[i])
+          yt[i]=rpois(1,lambt[i])
+        }
+      }
+      if(i>=125 & i<150){
+        if(i==125){
+          mut[125]=log(exp(mut[124])+15)
+          lambt[i]=exp(mut[i])
+          yt[i]=rpois(1,lambt[i])
+        }
+        else{
+          mut[i]=phi*mut[i-1]+eta[i]
+          lambt[i]=exp(mut[i])
+          yt[i]=rpois(1,lambt[i])
+        }
+      }
+      if(i>=150 & i<175){
+        if(i==150){
+          mut[150]=log(exp(mut[149])+15)
+          lambt[i]=exp(mut[i])
+          yt[i]=rpois(1,lambt[i])
+        }
+        else{
+          mut[i]=phi*mut[i-1]+eta[i]
+          lambt[i]=exp(mut[i])
+          yt[i]=rpois(1,lambt[i])
+        }
+      }
+      if(i>=175){
+        if(i==175){
+          mut[175]=log(exp(mut[174])+15)
+          lambt[i]=exp(mut[i])
+          yt[i]=rpois(1,lambt[i])
+        }
+        else{
+         
+          mut[i]=phi*mut[i-1]+eta[i]
+          lambt[i]=exp(mut[i])
+          yt[i]=rpois(1,lambt[i])
+        }
+      }
+    }
+     lambda[[l]]<-lambt[101:n]
+    nivel[[l]]<-mut[101:n]
+    yt=yt[101:n]
+    ytlist[[l]]<-yt
+   
+    ##Gibbs Sampler
+    #set.seed(1234)
+    n=length(yt)
+    U <- sample(c(1,0), length(yt)-1, replace=TRUE)   ##chute inicial
+    a0=1
+    R0=10
+    disc0=0.7
+    namost=1
+    nsample <- 4000
+    burnin <- 1000
+    lag <- 3
+    s=1
+    t=1
+    D1=1 ##beta
+    D2=10 ##alpha
+    Nsim <-  (nsample - burnin)/lag
+    Umat<-matrix(nrow=nsample, ncol=n-1)
+    nblocos=NULL
+    discf=NULL
+    UDGLM<-rep(0, n-1)
+
+    for(j in 1:nsample){
+      z<-contbl(U)
+      discf[j]<-ppmpoissonarms(yt=yt, a0=a0, R0=R0, U=U, s=s, t=t, namost=namost, disc0=disc0)
+     
+      for(r in 1:(n-1)){
+        U[r] <- 0
+        logfat0 <- dglmpoissonmppm(yt=yt  , a0=a0, R0=R0, delta=discf[j], U=U)
+        U[r] <- 1
+        logfat1 <- dglmpoissonmppm(yt=yt  , a0=a0, R0=R0, delta=discf[j], U=U)
+        R <- exp(logfat1- logfat0)*(n+D1-z)/(z+D2-2)
+        u <- runif(1)
+        if(R > (1-u)/u){U[r] <- 1}
+        else{U[r] <- 0}
+      }
+      Umat[j,]<-U
+      disc0<-discf[j]
+      #print(j)
+    }
+   
+   
+   
+    X=seq(1, nsample-burnin, 1)
+    U.mcmc=NULL
+    U.mcmc<-cbind(X,Umat[(burnin+1):nsample,])%>%as.data.frame()%>%filter(X%%lag==0)%>%subset(select=-c(1))
+    UMC[[l]]<-U.mcmc
+    discf.mcmc=NULL
+    discf.mcmc<-cbind(X,discf[(burnin+1):nsample])%>%as.data.frame()%>%filter(X%%lag==0)%>%subset(select=-c(1))
+   
+   
+    hpddeltappm<-HPDinterval(as.mcmc(discf.mcmc$V2))
+    deltappmmean[l]<-mean(discf.mcmc$V2)
+    deltappmlow[l]<-hpddeltappm[1]
+    deltappmhigh[l]<-hpddeltappm[2]
+   
+    deltappmmedian[l]<-median(discf.mcmc$V2)
+   
+    probchange[l,] <- 1-apply(U.mcmc,2,mean)
+   
+    fit<-ppmpoissonarms(yt=yt, a0=1, R0=10,  U=UDGLM, s=1 ,t=1, namost=1000, disc0=disc0)
+    deltadglm[l]<-mean(fit[[1]])
+    hpdglm<-HPDinterval(as.mcmc(fit))
+    deltadglmlow[l]<-hpdglm[1]
+    deltadglmhigh[l]<-hpdglm[2]
+  },error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+  print(l)
+}
+
+
+
+save(deltappmmean, deltappmmedian, deltappmlow, deltappmhigh, probchange, deltadglm, deltadglmlow, deltadglmhigh, file="MCppmYAO2.RData")
+save(UMC, file="UMCYAO2.RData")
+save(ytlist, file="ytYAO2.RData")
+save(nivel, file="nivelYAO2.RData")
+save(lambda, file="lambdaYAO2.RData")
